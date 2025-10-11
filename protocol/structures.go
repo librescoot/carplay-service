@@ -42,9 +42,8 @@ type BluetoothPIN struct {
 }
 
 type Plugged struct {
-	PhoneType int  `struc:"int32,little"`
-	Wifi      bool `struc:"skip"`
-	// FIXME: Send WifiParam only when no wifi is ok
+	PhoneType PhoneType `struc:"int32,little"`
+	Wifi      int32     `struc:"int32,little,omitempty"`
 }
 
 type Unplugged struct {
@@ -76,7 +75,14 @@ type Touch struct {
 }
 
 type MultiTouch struct {
-	// TODO: Implement
+	Touches []TouchItem `struc:"skip"`
+}
+
+type TouchItem struct {
+	X      float32             `struc:"float32,little"`
+	Y      float32             `struc:"float32,little"`
+	Action MultiTouchAction    `struc:"int32,little"`
+	ID     uint32              `struc:"uint32,little"`
 }
 
 type BluetoothDeviceName struct {
@@ -94,4 +100,45 @@ type BluetoothPairedList struct {
 type Unknown struct {
 	Type uint32 `struc:"skip"`
 	Data []byte `struc:"skip"`
+}
+
+type MediaData struct {
+	Type      MediaType `struc:"int32,little"`
+	MediaInfo []byte    `struc:"skip"`
+}
+
+type Opened struct {
+	Width         int32 `struc:"int32,little"`
+	Height        int32 `struc:"int32,little"`
+	Fps           int32 `struc:"int32,little"`
+	Format        int32 `struc:"int32,little"`
+	PacketMax     int32 `struc:"int32,little"`
+	IBox          int32 `struc:"int32,little"`
+	PhoneMode     int32 `struc:"int32,little"`
+}
+
+type BoxSettings struct {
+	Settings []byte `struc:"skip"`
+}
+
+type Phase struct {
+	PhaseValue uint32 `struc:"int32,little"`
+}
+
+type HiCarLink struct {
+	Link NullTermString `struc:"skip"`
+}
+
+type LogoTypeMsg struct {
+	Logo LogoType `struc:"int32,little"`
+}
+
+type DisconnectPhone struct {
+}
+
+type CloseDongle struct {
+}
+
+type SendIconConfig struct {
+	Config []byte `struc:"skip"`
 }

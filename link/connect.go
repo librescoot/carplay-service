@@ -7,7 +7,21 @@ import (
 	"github.com/google/gousb"
 )
 
+// KnownDevices contains the list of known CarPlay dongle USB device IDs
+var KnownDevices = []struct {
+	VendorID  uint16
+	ProductID uint16
+}{
+	{VendorID: 0x1314, ProductID: 0x1520},
+	{VendorID: 0x1314, ProductID: 0x1521},
+}
+
 func Connect() (*gousb.InEndpoint, *gousb.OutEndpoint, func(), error) {
+	return ConnectWithTimeout(5, 3*time.Second)
+}
+
+// ConnectWithTimeout attempts to connect to a CarPlay dongle with configurable retry settings
+func ConnectWithTimeout(maxRetries int, retryDelay time.Duration) (*gousb.InEndpoint, *gousb.OutEndpoint, func(), error) {
 	cleanTask := make([]func(), 0)
 	defer func() {
 		for _, task := range cleanTask {
@@ -21,25 +35,31 @@ func Connect() (*gousb.InEndpoint, *gousb.OutEndpoint, func(), error) {
 	var (
 		dev       *gousb.Device
 		err       error
-		waitCount = 5
+		waitCount = maxRetries
 	)
 
 	for {
-		dev, err = ctx.OpenDeviceWithVIDPID(0x1314, 0x1520)
-		if err != nil {
-			return nil, nil, nil, err
-		}
-		if dev == nil {
-			waitCount--
-			if waitCount < 0 {
-				return nil, nil, nil, errors.New("Could not find a device")
+		// Try each known device
+		for _, device := range KnownDevices {
+			dev, err = ctx.OpenDeviceWithVIDPID(gousb.ID(device.VendorID), gousb.ID(device.ProductID))
+			if err != nil {
+				continue // Try next device
 			}
-			time.Sleep(3 * time.Second)
-			continue
+			if dev != nil {
+				cleanTask = append(cleanTask, func() { dev.Close() })
+				goto deviceFound
+			}
 		}
-		cleanTask = append(cleanTask, func() { dev.Close() })
-		break
+
+		// No device found, retry or fail
+		waitCount--
+		if waitCount < 0 {
+			return nil, nil, nil, errors.New("Could not find a compatible CarPlay dongle device")
+		}
+		time.Sleep(retryDelay)
 	}
+
+deviceFound:
 
 	intf, done, err := dev.DefaultInterface()
 	if err != nil {

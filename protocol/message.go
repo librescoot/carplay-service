@@ -15,6 +15,7 @@ const magicNumber uint32 = 0x55aa55aa
 var messageTypes = map[reflect.Type]uint32{
 	reflect.TypeOf(&SendFile{}):            0x99,
 	reflect.TypeOf(&Open{}):                0x01,
+	reflect.TypeOf(&Opened{}):              0x01,
 	reflect.TypeOf(&Heartbeat{}):           0xaa,
 	reflect.TypeOf(&ManufacturerInfo{}):    0x14,
 	reflect.TypeOf(&CarPlay{}):             0x08,
@@ -29,6 +30,14 @@ var messageTypes = map[reflect.Type]uint32{
 	reflect.TypeOf(&BluetoothDeviceName{}): 0x0d,
 	reflect.TypeOf(&WifiDeviceName{}):      0x0e,
 	reflect.TypeOf(&BluetoothPairedList{}): 0x12,
+	reflect.TypeOf(&MultiTouch{}):          0x17,
+	reflect.TypeOf(&Phase{}):               0x03,
+	reflect.TypeOf(&HiCarLink{}):           0x18,
+	reflect.TypeOf(&BoxSettings{}):         0x19,
+	reflect.TypeOf(&MediaData{}):           0x2a,
+	reflect.TypeOf(&LogoTypeMsg{}):         0x09,
+	reflect.TypeOf(&DisconnectPhone{}):     0x0f,
+	reflect.TypeOf(&CloseDongle{}):         0x15,
 }
 
 // Header is header structure of data protocol
@@ -112,6 +121,27 @@ func Unmarshal(data []byte, payload interface{}) error {
 		payload.Data = NullTermString(data)
 	case *BluetoothPairedList:
 		payload.Data = NullTermString(data)
+	case *HiCarLink:
+		payload.Link = NullTermString(data)
+	case *BoxSettings:
+		payload.Settings = data
+	case *MediaData:
+		if len(data) > 4 {
+			payload.MediaInfo = data[4:]
+		}
+	case *MultiTouch:
+		// Parse multiple touch items
+		itemSize := 16 // 4 floats * 4 bytes
+		numTouches := len(data) / itemSize
+		payload.Touches = make([]TouchItem, numTouches)
+		for i := 0; i < numTouches; i++ {
+			offset := i * itemSize
+			item := &payload.Touches[i]
+			binary.Read(bytes.NewBuffer(data[offset:offset+4]), binary.LittleEndian, &item.X)
+			binary.Read(bytes.NewBuffer(data[offset+4:offset+8]), binary.LittleEndian, &item.Y)
+			binary.Read(bytes.NewBuffer(data[offset+8:offset+12]), binary.LittleEndian, &item.Action)
+			binary.Read(bytes.NewBuffer(data[offset+12:offset+16]), binary.LittleEndian, &item.ID)
+		}
 	case *Unknown:
 		payload.Data = data
 	}

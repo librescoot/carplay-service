@@ -1,0 +1,228 @@
+# GoCarPlay Makefile
+BIN := gocarplay
+DEMO_BIN := gocarplay-demo
+GIT_REV := $(shell git describe --tags --always 2>/dev/null)
+ifdef GIT_REV
+LDFLAGS := -X main.version=$(GIT_REV)
+else
+LDFLAGS :=
+endif
+BUILDFLAGS := -tags netgo
+DEMO_DIR := ./webrtc-demo
+LIB_PACKAGES := ./... ./protocol/... ./link/...
+
+# Go parameters
+GOCMD := go
+GOBUILD := $(GOCMD) build
+GOCLEAN := $(GOCMD) clean
+GOTEST := $(GOCMD) test
+GOGET := $(GOCMD) get
+GOMOD := $(GOCMD) mod
+GOFMT := gofmt
+
+.PHONY: build demo host arm amd64 arm64 dist clean test fmt tidy vet lint all run run-demo install deps
+
+# Default target
+all: tidy fmt vet test build
+
+# Build library only (no binary, just check compilation)
+build:
+	$(GOBUILD) -v ./...
+
+# Build demo application for host platform
+demo: host
+
+host:
+	cd $(DEMO_DIR) && $(GOBUILD) -ldflags "$(LDFLAGS)" -o ../$(DEMO_BIN)-host .
+
+# Cross-compilation targets
+# Note: CGO_ENABLED=1 is required for USB access via gousb
+# For cross-compilation, you need the appropriate toolchain:
+#   - ARM: arm-linux-gnueabihf-gcc
+#   - ARM64: aarch64-linux-gnu-gcc
+# If you don't have the toolchain, build on the target device instead
+amd64:
+	cd $(DEMO_DIR) && GOOS=linux GOARCH=amd64 CGO_ENABLED=1 $(GOBUILD) -ldflags "$(LDFLAGS)" -o ../$(DEMO_BIN)-amd64 .
+
+arm:
+	cd $(DEMO_DIR) && GOOS=linux GOARCH=arm GOARM=7 CGO_ENABLED=1 CC=arm-linux-gnueabihf-gcc $(GOBUILD) -ldflags "$(LDFLAGS)" -o ../$(DEMO_BIN)-arm .
+
+arm64:
+	cd $(DEMO_DIR) && GOOS=linux GOARCH=arm64 CGO_ENABLED=1 CC=aarch64-linux-gnu-gcc $(GOBUILD) -ldflags "$(LDFLAGS)" -o ../$(DEMO_BIN)-arm64 .
+
+# Simple ARM build (build on the target device)
+arm-native:
+	cd $(DEMO_DIR) && $(GOBUILD) -ldflags "$(LDFLAGS)" -o ../$(DEMO_BIN)-arm .
+
+# macOS targets
+darwin-amd64:
+	cd $(DEMO_DIR) && GOOS=darwin GOARCH=amd64 $(GOBUILD) -ldflags "$(LDFLAGS)" -o ../$(DEMO_BIN)-darwin-amd64 .
+
+darwin-arm64:
+	cd $(DEMO_DIR) && GOOS=darwin GOARCH=arm64 $(GOBUILD) -ldflags "$(LDFLAGS)" -o ../$(DEMO_BIN)-darwin-arm64 .
+
+# Windows targets
+windows:
+	cd $(DEMO_DIR) && GOOS=windows GOARCH=amd64 $(GOBUILD) -ldflags "$(LDFLAGS)" -o ../$(DEMO_BIN)-windows.exe .
+
+# Distribution build (optimized, stripped)
+# CGO_ENABLED=1 is required for USB access
+dist:
+	cd $(DEMO_DIR) && GOOS=linux GOARCH=arm GOARM=7 CGO_ENABLED=1 CC=arm-linux-gnueabihf-gcc $(GOBUILD) -ldflags "$(LDFLAGS) -s -w" -o ../$(DEMO_BIN)-arm-dist .
+
+dist-native:
+	cd $(DEMO_DIR) && $(GOBUILD) -ldflags "$(LDFLAGS) -s -w" -o ../$(DEMO_BIN)-dist .
+
+dist-all: dist
+	cd $(DEMO_DIR) && GOOS=linux GOARCH=amd64 CGO_ENABLED=1 $(GOBUILD) -ldflags "$(LDFLAGS) -s -w" -o ../$(DEMO_BIN)-amd64-dist .
+	cd $(DEMO_DIR) && GOOS=linux GOARCH=arm64 CGO_ENABLED=1 CC=aarch64-linux-gnu-gcc $(GOBUILD) -ldflags "$(LDFLAGS) -s -w" -o ../$(DEMO_BIN)-arm64-dist .
+	cd $(DEMO_DIR) && GOOS=darwin GOARCH=amd64 CGO_ENABLED=1 $(GOBUILD) -ldflags "$(LDFLAGS) -s -w" -o ../$(DEMO_BIN)-darwin-amd64-dist .
+	cd $(DEMO_DIR) && GOOS=darwin GOARCH=arm64 CGO_ENABLED=1 $(GOBUILD) -ldflags "$(LDFLAGS) -s -w" -o ../$(DEMO_BIN)-darwin-arm64-dist .
+
+# Clean build artifacts
+clean:
+	$(GOCLEAN)
+	rm -f $(DEMO_BIN)-*
+	rm -f coverage.txt coverage.html
+
+# Run tests
+test:
+	$(GOTEST) -v -race -coverprofile=coverage.txt ./...
+
+# Run tests with coverage report
+test-coverage: test
+	$(GOCMD) tool cover -html=coverage.txt -o coverage.html
+	@echo "Coverage report generated: coverage.html"
+
+# Run benchmarks
+bench:
+	$(GOTEST) -bench=. -benchmem ./...
+
+# Format code
+fmt:
+	$(GOFMT) -s -w .
+	$(GOCMD) fmt ./...
+
+# Run go mod tidy
+tidy:
+	$(GOMOD) tidy
+
+# Run go vet
+vet:
+	$(GOCMD) vet ./...
+
+# Install golangci-lint and run linting
+lint:
+	@which golangci-lint > /dev/null 2>&1 || (echo "Installing golangci-lint..." && go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest)
+	golangci-lint run ./...
+
+# Update dependencies
+deps:
+	$(GOGET) -u ./...
+	$(GOMOD) tidy
+
+# Run the demo application
+run: host
+	./$(DEMO_BIN)-host
+
+# Run demo with custom configuration
+run-demo: host
+	@echo "Starting GoCarPlay WebRTC Demo on http://localhost:8001"
+	./$(DEMO_BIN)-host
+
+# Run demo with specific configuration
+run-android: host
+	@echo "Starting with Android Auto mode enabled"
+	ANDROID_MODE=true ./$(DEMO_BIN)-host
+
+run-ios: host
+	@echo "Starting with iOS/CarPlay mode"
+	ANDROID_MODE=false ./$(DEMO_BIN)-host
+
+# Development helpers
+dev: fmt vet test run-demo
+
+# Watch for changes and rebuild (requires entr)
+watch:
+	@which entr > /dev/null 2>&1 || (echo "Please install entr: brew install entr (macOS) or apt-get install entr (Linux)" && exit 1)
+	find . -name "*.go" | entr -r make run-demo
+
+# Install binary to system (requires sudo)
+install: dist
+	sudo cp $(DEMO_BIN)-arm-dist /usr/local/bin/$(DEMO_BIN)
+	sudo chmod +x /usr/local/bin/$(DEMO_BIN)
+
+# Install for development (to GOPATH/bin)
+install-dev: host
+	mkdir -p $(GOPATH)/bin
+	cp $(DEMO_BIN)-host $(GOPATH)/bin/$(DEMO_BIN)
+
+# Docker targets
+docker-build:
+	docker build -t gocarplay:latest .
+
+docker-run:
+	docker run --rm -it --privileged -v /dev/bus/usb:/dev/bus/usb -p 8001:8001 gocarplay:latest
+
+# Documentation
+docs:
+	@echo "Generating documentation..."
+	godoc -http=:6060 &
+	@echo "Documentation server started at http://localhost:6060/pkg/github.com/mzyy94/gocarplay/"
+
+# Check code quality
+check: fmt vet lint test
+	@echo "✅ All checks passed!"
+
+# Show help
+help:
+	@echo "GoCarPlay Makefile targets:"
+	@echo ""
+	@echo "Building:"
+	@echo "  make build       - Build the library"
+	@echo "  make demo        - Build demo for host platform"
+	@echo "  make host        - Build demo for host platform"
+	@echo "  make amd64       - Build for Linux AMD64"
+	@echo "  make arm         - Build for Linux ARM (cross-compile)"
+	@echo "  make arm-native  - Build for ARM on ARM device"
+	@echo "  make arm64       - Build for Linux ARM64"
+	@echo "  make darwin-*    - Build for macOS"
+	@echo "  make windows     - Build for Windows"
+	@echo "  make dist        - Build optimized ARM binary"
+	@echo "  make dist-native - Build optimized for current platform"
+	@echo "  make dist-all    - Build optimized for all platforms"
+	@echo ""
+	@echo "Testing & Quality:"
+	@echo "  make test        - Run tests"
+	@echo "  make test-coverage - Run tests with coverage"
+	@echo "  make bench       - Run benchmarks"
+	@echo "  make fmt         - Format code"
+	@echo "  make vet         - Run go vet"
+	@echo "  make lint        - Run linter"
+	@echo "  make check       - Run all quality checks"
+	@echo ""
+	@echo "Running:"
+	@echo "  make run         - Run the demo"
+	@echo "  make run-demo    - Run WebRTC demo"
+	@echo "  make run-android - Run with Android mode"
+	@echo "  make run-ios     - Run with iOS mode"
+	@echo "  make watch       - Auto-rebuild on changes"
+	@echo ""
+	@echo "Maintenance:"
+	@echo "  make tidy        - Run go mod tidy"
+	@echo "  make deps        - Update dependencies"
+	@echo "  make clean       - Remove build artifacts"
+	@echo ""
+	@echo "Installation:"
+	@echo "  make install     - Install to /usr/local/bin"
+	@echo "  make install-dev - Install to GOPATH/bin"
+	@echo ""
+	@echo "Docker:"
+	@echo "  make docker-build - Build Docker image"
+	@echo "  make docker-run  - Run in Docker container"
+	@echo ""
+	@echo "Other:"
+	@echo "  make docs        - Start documentation server"
+	@echo "  make help        - Show this help"
+
+.DEFAULT_GOAL := help

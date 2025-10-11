@@ -12,6 +12,7 @@ import (
 	"github.com/pion/webrtc/v3"
 	"github.com/pion/webrtc/v3/pkg/media"
 
+	"github.com/mzyy94/gocarplay"
 	"github.com/mzyy94/gocarplay/link"
 	"github.com/mzyy94/gocarplay/protocol"
 )
@@ -152,13 +153,51 @@ func sendTouch(data []byte) {
 }
 
 func startCarPlay(data []byte) {
-	if err := json.Unmarshal(data, &size); err != nil {
+	type startConfig struct {
+		Width     int32  `json:"width"`
+		Height    int32  `json:"height"`
+		Fps       int32  `json:"fps,omitempty"`
+		Dpi       int32  `json:"dpi,omitempty"`
+		NightMode bool   `json:"nightMode,omitempty"`
+		WifiType  string `json:"wifiType,omitempty"`
+		MicType   string `json:"micType,omitempty"`
+	}
+
+	var cfg startConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		log.Printf("Failed to parse config: %v", err)
 		return
 	}
 
+	// Update global size
+	size.Width = cfg.Width
+	size.Height = cfg.Height
+
+	// Set FPS if provided
+	if cfg.Fps > 0 {
+		fps = cfg.Fps
+	}
+
 	if err := link.Init(); err != nil {
+		log.Printf("Failed to initialize link: %v", err)
 		return
 	}
+
+	// Create configuration with user parameters
+	config := gocarplay.DefaultConfig()
+	config.Width = cfg.Width
+	config.Height = cfg.Height
+	config.Fps = fps
+	if cfg.Dpi > 0 {
+		config.Dpi = cfg.Dpi
+	}
+	if cfg.WifiType != "" {
+		config.WifiType = cfg.WifiType
+	}
+	if cfg.MicType != "" {
+		config.MicType = cfg.MicType
+	}
+	config.NightMode = cfg.NightMode
 
 	go link.Communicate(func(data interface{}) {
 		switch data := data.(type) {
@@ -167,7 +206,7 @@ func startCarPlay(data []byte) {
 			videoTrack.WriteSample(media.Sample{Data: data.Data, Duration: duration})
 		case *protocol.AudioData:
 			if len(data.Data) == 0 {
-				log.Printf("[onData] %#v", data)
+				handleAudioCommand(data)
 			} else {
 				var buf bytes.Buffer
 				fr := protocol.AudioDecodeTypes[data.DecodeType].Frequency
@@ -176,14 +215,54 @@ func startCarPlay(data []byte) {
 				binary.Write(&buf, binary.LittleEndian, ch)
 				audioDataChannel.Send(append(buf.Bytes(), data.Data...))
 			}
+		case *protocol.MediaData:
+			handleMediaData(data)
+		case *protocol.Plugged:
+			log.Printf("[Device Plugged] PhoneType: %v, WiFi: %v", data.PhoneType, data.Wifi)
+			// Automatically enable Android work mode if Android device is detected
+			link.HandlePhonePlugged(data)
+		case *protocol.Phase:
+			log.Printf("[Phase] %v", data.PhaseValue)
+		case *protocol.BoxSettings:
+			log.Printf("[BoxSettings] %s", string(data.Settings))
 		default:
 			log.Printf("[onData] %#v", data)
 		}
 	}, func(err error) {
-		log.Fatalf("[ERROR] %#v", err)
+		log.Printf("[ERROR] %#v", err)
 	})
 
-	go link.Start(size.Width, size.Height, fps, 160)
+	// Start with configuration
+	go link.StartWithConfig(config)
+}
+
+func handleAudioCommand(data *protocol.AudioData) {
+	if data.Command != 0 {
+		log.Printf("[Audio Command] %v", data.Command)
+		// Handle audio commands like Siri start/stop, media start/stop, etc.
+		switch data.Command {
+		case protocol.AudioSiriStart:
+			log.Println("Siri started")
+		case protocol.AudioSiriStop:
+			log.Println("Siri stopped")
+		case protocol.AudioMediaStart:
+			log.Println("Media playback started")
+		case protocol.AudioMediaStop:
+			log.Println("Media playback stopped")
+		}
+	}
+}
+
+func handleMediaData(data *protocol.MediaData) {
+	if data.Type == protocol.MediaTypeData {
+		// Parse media info JSON
+		var mediaInfo map[string]interface{}
+		if err := json.Unmarshal(data.MediaInfo, &mediaInfo); err == nil {
+			log.Printf("[Media Info] %v", mediaInfo)
+		}
+	} else if data.Type == protocol.MediaTypeAlbumCover {
+		log.Printf("[Album Cover] Received %d bytes of image data", len(data.MediaInfo))
+	}
 }
 
 func main() {
