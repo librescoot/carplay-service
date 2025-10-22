@@ -8,6 +8,11 @@ else
 LDFLAGS :=
 endif
 BUILDFLAGS := -tags netgo
+# Static build flags - mostly static binaries
+# Note: libusb-1.0 requires libudev when building statically on Linux
+# We omit -ludev and let the linker find it automatically
+STATIC_LDFLAGS := $(LDFLAGS) -linkmode external -extldflags \"-static\"
+STATIC_BUILDFLAGS := $(BUILDFLAGS) -tags "netgo osusergo"
 DEMO_DIR := ./webrtc-demo
 LIB_PACKAGES := ./... ./protocol/... ./link/...
 
@@ -20,7 +25,7 @@ GOGET := $(GOCMD) get
 GOMOD := $(GOCMD) mod
 GOFMT := gofmt
 
-.PHONY: build demo host arm amd64 arm64 dist clean test fmt tidy vet lint all run run-demo install deps
+.PHONY: build build-static demo host arm amd64 arm64 dist clean test fmt tidy vet lint all run run-demo install deps static static-host static-amd64 static-arm static-arm-native static-arm64 static-darwin-amd64 static-darwin-arm64 static-windows static-all
 
 # Default target
 all: tidy fmt vet test build
@@ -28,6 +33,10 @@ all: tidy fmt vet test build
 # Build library only (no binary, just check compilation)
 build:
 	$(GOBUILD) -v ./...
+
+# Static build for library (compile check with static flags)
+build-static:
+	CGO_ENABLED=1 $(GOBUILD) $(STATIC_BUILDFLAGS) -v ./...
 
 # Build demo application for host platform
 demo: host
@@ -64,6 +73,58 @@ darwin-arm64:
 # Windows targets
 windows:
 	cd $(DEMO_DIR) && GOOS=windows GOARCH=amd64 $(GOBUILD) -ldflags "$(LDFLAGS)" -o ../$(DEMO_BIN)-windows.exe .
+
+# ============================================================================
+# Static Build Targets
+# ============================================================================
+# Static builds create binaries with all dependencies statically linked
+# Note: Requires static C libraries (libusb, etc.) for CGO dependencies
+# On Linux: apt-get install libusb-1.0-0-dev (or equivalent)
+# On macOS: brew install libusb
+
+# Static build for host platform
+static-host:
+	cd $(DEMO_DIR) && CGO_ENABLED=1 $(GOBUILD) $(STATIC_BUILDFLAGS) -ldflags "$(STATIC_LDFLAGS) -s -w" -o ../$(DEMO_BIN)-static-host .
+
+# Static build for Linux AMD64
+static-amd64:
+	cd $(DEMO_DIR) && GOOS=linux GOARCH=amd64 CGO_ENABLED=1 $(GOBUILD) $(STATIC_BUILDFLAGS) -ldflags "$(STATIC_LDFLAGS) -s -w" -o ../$(DEMO_BIN)-static-amd64 .
+
+# Static build for Linux ARM
+static-arm:
+	cd $(DEMO_DIR) && GOOS=linux GOARCH=arm GOARM=7 CGO_ENABLED=1 CC=arm-linux-gnueabihf-gcc $(GOBUILD) $(STATIC_BUILDFLAGS) -ldflags "$(STATIC_LDFLAGS) -s -w" -o ../$(DEMO_BIN)-static-arm .
+
+# Static build for Linux ARM64
+static-arm64:
+	cd $(DEMO_DIR) && GOOS=linux GOARCH=arm64 CGO_ENABLED=1 CC=aarch64-linux-gnu-gcc $(GOBUILD) $(STATIC_BUILDFLAGS) -ldflags "$(STATIC_LDFLAGS) -s -w" -o ../$(DEMO_BIN)-static-arm64 .
+
+# Static build on ARM device (no cross-compilation)
+static-arm-native:
+	cd $(DEMO_DIR) && CGO_ENABLED=1 $(GOBUILD) $(STATIC_BUILDFLAGS) -ldflags "$(STATIC_LDFLAGS) -s -w" -o ../$(DEMO_BIN)-static-arm .
+
+# Static builds for macOS (Note: macOS doesn't support fully static binaries)
+static-darwin-amd64:
+	cd $(DEMO_DIR) && GOOS=darwin GOARCH=amd64 CGO_ENABLED=1 $(GOBUILD) $(BUILDFLAGS) -ldflags "$(LDFLAGS) -s -w" -o ../$(DEMO_BIN)-static-darwin-amd64 .
+
+static-darwin-arm64:
+	cd $(DEMO_DIR) && GOOS=darwin GOARCH=arm64 CGO_ENABLED=1 $(GOBUILD) $(BUILDFLAGS) -ldflags "$(LDFLAGS) -s -w" -o ../$(DEMO_BIN)-static-darwin-arm64 .
+
+# Static build for Windows
+static-windows:
+	cd $(DEMO_DIR) && GOOS=windows GOARCH=amd64 CGO_ENABLED=1 CC=x86_64-w64-mingw32-gcc $(GOBUILD) $(STATIC_BUILDFLAGS) -ldflags "$(STATIC_LDFLAGS) -s -w" -o ../$(DEMO_BIN)-static-windows.exe .
+
+# Build all static binaries
+static-all:
+	@echo "Building all static binaries..."
+	$(MAKE) static-amd64
+	$(MAKE) static-arm
+	$(MAKE) static-arm64
+	$(MAKE) static-darwin-amd64
+	$(MAKE) static-darwin-arm64
+	@echo "✅ All static builds complete!"
+
+# Quick static build alias
+static: static-host
 
 # Distribution build (optimized, stripped)
 # CGO_ENABLED=1 is required for USB access
@@ -180,6 +241,7 @@ help:
 	@echo ""
 	@echo "Building:"
 	@echo "  make build       - Build the library"
+	@echo "  make build-static - Build library with static flags"
 	@echo "  make demo        - Build demo for host platform"
 	@echo "  make host        - Build demo for host platform"
 	@echo "  make amd64       - Build for Linux AMD64"
@@ -191,6 +253,17 @@ help:
 	@echo "  make dist        - Build optimized ARM binary"
 	@echo "  make dist-native - Build optimized for current platform"
 	@echo "  make dist-all    - Build optimized for all platforms"
+	@echo ""
+	@echo "Static Builds:"
+	@echo "  make static      - Build static binary for host platform"
+	@echo "  make static-host - Build static binary for host platform"
+	@echo "  make static-amd64 - Build static for Linux AMD64"
+	@echo "  make static-arm  - Build static for Linux ARM"
+	@echo "  make static-arm-native - Build static on ARM device"
+	@echo "  make static-arm64 - Build static for Linux ARM64"
+	@echo "  make static-darwin-* - Build for macOS (semi-static)"
+	@echo "  make static-windows - Build static for Windows"
+	@echo "  make static-all  - Build all static binaries"
 	@echo ""
 	@echo "Testing & Quality:"
 	@echo "  make test        - Run tests"
