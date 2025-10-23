@@ -115,6 +115,25 @@ func Unmarshal(data []byte, payload interface{}) error {
 		default:
 			payload.Data = data[12:]
 		}
+	case *VideoData:
+		// VideoData structure: Width(4) + Height(4) + Flags(4) + Length(4) + Unknown2(4) = 20 bytes header
+		// The actual H.264 video frame data starts at byte offset 20
+		// This matches the TypeScript implementation: data.subarray(20)
+		if len(data) >= 20 {
+			// Parse fields directly from byte slice (fast)
+			payload.Width = int32(binary.LittleEndian.Uint32(data[0:4]))
+			payload.Height = int32(binary.LittleEndian.Uint32(data[4:8]))
+			payload.Flags = int32(binary.LittleEndian.Uint32(data[8:12]))
+			payload.Length = int32(binary.LittleEndian.Uint32(data[12:16]))
+			payload.Unknown2 = int32(binary.LittleEndian.Uint32(data[16:20]))
+			// CRITICAL: Copy the video frame data instead of using slice reference
+			// If we just do data[20:], the underlying buffer can be reused/corrupted
+			// This causes "non-existing PPS" errors in ffmpeg
+			if len(data) > 20 {
+				payload.Data = make([]byte, len(data)-20)
+				copy(payload.Data, data[20:])
+			}
+		}
 	case *BluetoothDeviceName:
 		payload.Data = NullTermString(data)
 	case *WifiDeviceName:

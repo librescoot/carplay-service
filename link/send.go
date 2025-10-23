@@ -6,6 +6,11 @@ import (
 )
 
 func SendMessage(epOut *gousb.OutEndpoint, msg interface{}) error {
+	// Protect USB writes with mutex to prevent concurrent access
+	// This ensures touch events and heartbeats don't interfere with each other
+	writeMutex.Lock()
+	defer writeMutex.Unlock()
+
 	buf, err := protocol.Marshal(msg)
 	if err != nil {
 		return err

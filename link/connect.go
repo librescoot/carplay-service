@@ -2,6 +2,7 @@ package link
 
 import (
 	"errors"
+	"log"
 	"time"
 
 	"github.com/google/gousb"
@@ -29,6 +30,7 @@ func ConnectWithTimeout(maxRetries int, retryDelay time.Duration) (*gousb.InEndp
 		}
 	}()
 
+	log.Println("[USB] Searching for CarPlay dongle...")
 	ctx := gousb.NewContext()
 	cleanTask = append(cleanTask, func() { ctx.Close() })
 
@@ -46,6 +48,7 @@ func ConnectWithTimeout(maxRetries int, retryDelay time.Duration) (*gousb.InEndp
 				continue // Try next device
 			}
 			if dev != nil {
+				log.Printf("[USB] Found device: VendorID=0x%04x, ProductID=0x%04x", device.VendorID, device.ProductID)
 				cleanTask = append(cleanTask, func() { dev.Close() })
 				goto deviceFound
 			}
@@ -54,8 +57,10 @@ func ConnectWithTimeout(maxRetries int, retryDelay time.Duration) (*gousb.InEndp
 		// No device found, retry or fail
 		waitCount--
 		if waitCount < 0 {
+			log.Println("[USB] ERROR: Could not find a compatible CarPlay dongle device")
 			return nil, nil, nil, errors.New("Could not find a compatible CarPlay dongle device")
 		}
+		log.Printf("[USB] Device not found, retrying... (%d attempts remaining)", waitCount)
 		time.Sleep(retryDelay)
 	}
 
@@ -63,18 +68,24 @@ deviceFound:
 
 	intf, done, err := dev.DefaultInterface()
 	if err != nil {
+		log.Printf("[USB] ERROR: Failed to claim interface: %v", err)
 		return nil, nil, nil, err
 	}
 	cleanTask = append(cleanTask, done)
 
 	epOut, err := intf.OutEndpoint(1)
 	if err != nil {
+		log.Printf("[USB] ERROR: Failed to open OUT endpoint: %v", err)
 		return nil, nil, nil, err
 	}
 	epIn, err := intf.InEndpoint(1)
 	if err != nil {
+		log.Printf("[USB] ERROR: Failed to open IN endpoint: %v", err)
 		return nil, nil, nil, err
 	}
+
+	log.Println("[USB] Successfully connected to CarPlay dongle")
+	log.Printf("[USB] Endpoints configured: IN=0x%02x, OUT=0x%02x", epIn.Desc.Address, epOut.Desc.Address)
 
 	closeTask := make([]func(), len(cleanTask))
 	copy(closeTask, cleanTask)

@@ -1,6 +1,6 @@
 # GoCarPlay Makefile
 BIN := gocarplay
-DEMO_BIN := gocarplay-demo
+SERVER_BIN := gocarplay-server
 GIT_REV := $(shell git describe --tags --always 2>/dev/null)
 ifdef GIT_REV
 LDFLAGS := -X main.version=$(GIT_REV)
@@ -13,7 +13,7 @@ BUILDFLAGS := -tags netgo
 # We omit -ludev and let the linker find it automatically
 STATIC_LDFLAGS := $(LDFLAGS) -linkmode external -extldflags \"-static\"
 STATIC_BUILDFLAGS := $(BUILDFLAGS) -tags "netgo osusergo"
-DEMO_DIR := ./webrtc-demo
+SERVER_DIR := ./cmd/server
 LIB_PACKAGES := ./... ./protocol/... ./link/...
 
 # Go parameters
@@ -25,7 +25,7 @@ GOGET := $(GOCMD) get
 GOMOD := $(GOCMD) mod
 GOFMT := gofmt
 
-.PHONY: build build-static demo host arm amd64 arm64 dist clean test fmt tidy vet lint all run run-demo install deps static static-host static-amd64 static-arm static-arm-native static-arm64 static-darwin-amd64 static-darwin-arm64 static-windows static-all
+.PHONY: build build-static server host arm amd64 arm64 dist clean test fmt tidy vet lint all run run-server install deps static static-host static-amd64 static-arm static-arm-native static-arm64 static-darwin-amd64 static-darwin-arm64 static-windows static-all
 
 # Default target
 all: tidy fmt vet test build
@@ -38,11 +38,11 @@ build:
 build-static:
 	CGO_ENABLED=1 $(GOBUILD) $(STATIC_BUILDFLAGS) -v ./...
 
-# Build demo application for host platform
-demo: host
+# Build server application for host platform
+server: host
 
 host:
-	cd $(DEMO_DIR) && $(GOBUILD) -ldflags "$(LDFLAGS)" -o ../$(DEMO_BIN)-host .
+	cd $(SERVER_DIR) && $(GOBUILD) -ldflags "$(LDFLAGS)" -o ../../$(SERVER_BIN)-host .
 
 # Cross-compilation targets
 # Note: CGO_ENABLED=1 is required for USB access via gousb
@@ -51,28 +51,28 @@ host:
 #   - ARM64: aarch64-linux-gnu-gcc
 # If you don't have the toolchain, build on the target device instead
 amd64:
-	cd $(DEMO_DIR) && GOOS=linux GOARCH=amd64 CGO_ENABLED=1 $(GOBUILD) -ldflags "$(LDFLAGS)" -o ../$(DEMO_BIN)-amd64 .
+	cd $(SERVER_DIR) && GOOS=linux GOARCH=amd64 CGO_ENABLED=1 $(GOBUILD) -ldflags "$(LDFLAGS)" -o ../../$(SERVER_BIN)-amd64 .
 
 arm:
-	cd $(DEMO_DIR) && GOOS=linux GOARCH=arm GOARM=7 CGO_ENABLED=1 CC=arm-linux-gnueabihf-gcc $(GOBUILD) -ldflags "$(LDFLAGS)" -o ../$(DEMO_BIN)-arm .
+	cd $(SERVER_DIR) && GOOS=linux GOARCH=arm GOARM=7 CGO_ENABLED=1 CC=arm-linux-gnueabihf-gcc $(GOBUILD) -ldflags "$(LDFLAGS)" -o ../../$(SERVER_BIN)-arm .
 
 arm64:
-	cd $(DEMO_DIR) && GOOS=linux GOARCH=arm64 CGO_ENABLED=1 CC=aarch64-linux-gnu-gcc $(GOBUILD) -ldflags "$(LDFLAGS)" -o ../$(DEMO_BIN)-arm64 .
+	cd $(SERVER_DIR) && GOOS=linux GOARCH=arm64 CGO_ENABLED=1 CC=aarch64-linux-gnu-gcc $(GOBUILD) -ldflags "$(LDFLAGS)" -o ../../$(SERVER_BIN)-arm64 .
 
 # Simple ARM build (build on the target device)
 arm-native:
-	cd $(DEMO_DIR) && $(GOBUILD) -ldflags "$(LDFLAGS)" -o ../$(DEMO_BIN)-arm .
+	cd $(SERVER_DIR) && $(GOBUILD) -ldflags "$(LDFLAGS)" -o ../../$(SERVER_BIN)-arm .
 
 # macOS targets
 darwin-amd64:
-	cd $(DEMO_DIR) && GOOS=darwin GOARCH=amd64 $(GOBUILD) -ldflags "$(LDFLAGS)" -o ../$(DEMO_BIN)-darwin-amd64 .
+	cd $(SERVER_DIR) && GOOS=darwin GOARCH=amd64 $(GOBUILD) -ldflags "$(LDFLAGS)" -o ../../$(SERVER_BIN)-darwin-amd64 .
 
 darwin-arm64:
-	cd $(DEMO_DIR) && GOOS=darwin GOARCH=arm64 $(GOBUILD) -ldflags "$(LDFLAGS)" -o ../$(DEMO_BIN)-darwin-arm64 .
+	cd $(SERVER_DIR) && GOOS=darwin GOARCH=arm64 $(GOBUILD) -ldflags "$(LDFLAGS)" -o ../../$(SERVER_BIN)-darwin-arm64 .
 
 # Windows targets
 windows:
-	cd $(DEMO_DIR) && GOOS=windows GOARCH=amd64 $(GOBUILD) -ldflags "$(LDFLAGS)" -o ../$(DEMO_BIN)-windows.exe .
+	cd $(SERVER_DIR) && GOOS=windows GOARCH=amd64 $(GOBUILD) -ldflags "$(LDFLAGS)" -o ../../$(SERVER_BIN)-windows.exe .
 
 # ============================================================================
 # Static Build Targets
@@ -84,34 +84,34 @@ windows:
 
 # Static build for host platform
 static-host:
-	cd $(DEMO_DIR) && CGO_ENABLED=1 $(GOBUILD) $(STATIC_BUILDFLAGS) -ldflags "$(STATIC_LDFLAGS) -s -w" -o ../$(DEMO_BIN)-static-host .
+	cd $(SERVER_DIR) && CGO_ENABLED=1 $(GOBUILD) $(STATIC_BUILDFLAGS) -ldflags "$(STATIC_LDFLAGS) -s -w" -o ../../$(SERVER_BIN)-static-host .
 
 # Static build for Linux AMD64
 static-amd64:
-	cd $(DEMO_DIR) && GOOS=linux GOARCH=amd64 CGO_ENABLED=1 $(GOBUILD) $(STATIC_BUILDFLAGS) -ldflags "$(STATIC_LDFLAGS) -s -w" -o ../$(DEMO_BIN)-static-amd64 .
+	cd $(SERVER_DIR) && GOOS=linux GOARCH=amd64 CGO_ENABLED=1 $(GOBUILD) $(STATIC_BUILDFLAGS) -ldflags "$(STATIC_LDFLAGS) -s -w" -o ../../$(SERVER_BIN)-static-amd64 .
 
 # Static build for Linux ARM
 static-arm:
-	cd $(DEMO_DIR) && GOOS=linux GOARCH=arm GOARM=7 CGO_ENABLED=1 CC=arm-linux-gnueabihf-gcc $(GOBUILD) $(STATIC_BUILDFLAGS) -ldflags "$(STATIC_LDFLAGS) -s -w" -o ../$(DEMO_BIN)-static-arm .
+	cd $(SERVER_DIR) && GOOS=linux GOARCH=arm GOARM=7 CGO_ENABLED=1 CC=arm-linux-gnueabihf-gcc $(GOBUILD) $(STATIC_BUILDFLAGS) -ldflags "$(STATIC_LDFLAGS) -s -w" -o ../../$(SERVER_BIN)-static-arm .
 
 # Static build for Linux ARM64
 static-arm64:
-	cd $(DEMO_DIR) && GOOS=linux GOARCH=arm64 CGO_ENABLED=1 CC=aarch64-linux-gnu-gcc $(GOBUILD) $(STATIC_BUILDFLAGS) -ldflags "$(STATIC_LDFLAGS) -s -w" -o ../$(DEMO_BIN)-static-arm64 .
+	cd $(SERVER_DIR) && GOOS=linux GOARCH=arm64 CGO_ENABLED=1 CC=aarch64-linux-gnu-gcc $(GOBUILD) $(STATIC_BUILDFLAGS) -ldflags "$(STATIC_LDFLAGS) -s -w" -o ../../$(SERVER_BIN)-static-arm64 .
 
 # Static build on ARM device (no cross-compilation)
 static-arm-native:
-	cd $(DEMO_DIR) && CGO_ENABLED=1 $(GOBUILD) $(STATIC_BUILDFLAGS) -ldflags "$(STATIC_LDFLAGS) -s -w" -o ../$(DEMO_BIN)-static-arm .
+	cd $(SERVER_DIR) && CGO_ENABLED=1 $(GOBUILD) $(STATIC_BUILDFLAGS) -ldflags "$(STATIC_LDFLAGS) -s -w" -o ../../$(SERVER_BIN)-static-arm .
 
 # Static builds for macOS (Note: macOS doesn't support fully static binaries)
 static-darwin-amd64:
-	cd $(DEMO_DIR) && GOOS=darwin GOARCH=amd64 CGO_ENABLED=1 $(GOBUILD) $(BUILDFLAGS) -ldflags "$(LDFLAGS) -s -w" -o ../$(DEMO_BIN)-static-darwin-amd64 .
+	cd $(SERVER_DIR) && GOOS=darwin GOARCH=amd64 CGO_ENABLED=1 $(GOBUILD) $(BUILDFLAGS) -ldflags "$(LDFLAGS) -s -w" -o ../../$(SERVER_BIN)-static-darwin-amd64 .
 
 static-darwin-arm64:
-	cd $(DEMO_DIR) && GOOS=darwin GOARCH=arm64 CGO_ENABLED=1 $(GOBUILD) $(BUILDFLAGS) -ldflags "$(LDFLAGS) -s -w" -o ../$(DEMO_BIN)-static-darwin-arm64 .
+	cd $(SERVER_DIR) && GOOS=darwin GOARCH=arm64 CGO_ENABLED=1 $(GOBUILD) $(BUILDFLAGS) -ldflags "$(LDFLAGS) -s -w" -o ../../$(SERVER_BIN)-static-darwin-arm64 .
 
 # Static build for Windows
 static-windows:
-	cd $(DEMO_DIR) && GOOS=windows GOARCH=amd64 CGO_ENABLED=1 CC=x86_64-w64-mingw32-gcc $(GOBUILD) $(STATIC_BUILDFLAGS) -ldflags "$(STATIC_LDFLAGS) -s -w" -o ../$(DEMO_BIN)-static-windows.exe .
+	cd $(SERVER_DIR) && GOOS=windows GOARCH=amd64 CGO_ENABLED=1 CC=x86_64-w64-mingw32-gcc $(GOBUILD) $(STATIC_BUILDFLAGS) -ldflags "$(STATIC_LDFLAGS) -s -w" -o ../../$(SERVER_BIN)-static-windows.exe .
 
 # Build all static binaries
 static-all:
@@ -129,21 +129,21 @@ static: static-host
 # Distribution build (optimized, stripped)
 # CGO_ENABLED=1 is required for USB access
 dist:
-	cd $(DEMO_DIR) && GOOS=linux GOARCH=arm GOARM=7 CGO_ENABLED=1 CC=arm-linux-gnueabihf-gcc $(GOBUILD) -ldflags "$(LDFLAGS) -s -w" -o ../$(DEMO_BIN)-arm-dist .
+	cd $(SERVER_DIR) && GOOS=linux GOARCH=arm GOARM=7 CGO_ENABLED=1 CC=arm-linux-gnueabihf-gcc $(GOBUILD) -ldflags "$(LDFLAGS) -s -w" -o ../../$(SERVER_BIN)-arm-dist .
 
 dist-native:
-	cd $(DEMO_DIR) && $(GOBUILD) -ldflags "$(LDFLAGS) -s -w" -o ../$(DEMO_BIN)-dist .
+	cd $(SERVER_DIR) && $(GOBUILD) -ldflags "$(LDFLAGS) -s -w" -o ../../$(SERVER_BIN)-dist .
 
 dist-all: dist
-	cd $(DEMO_DIR) && GOOS=linux GOARCH=amd64 CGO_ENABLED=1 $(GOBUILD) -ldflags "$(LDFLAGS) -s -w" -o ../$(DEMO_BIN)-amd64-dist .
-	cd $(DEMO_DIR) && GOOS=linux GOARCH=arm64 CGO_ENABLED=1 CC=aarch64-linux-gnu-gcc $(GOBUILD) -ldflags "$(LDFLAGS) -s -w" -o ../$(DEMO_BIN)-arm64-dist .
-	cd $(DEMO_DIR) && GOOS=darwin GOARCH=amd64 CGO_ENABLED=1 $(GOBUILD) -ldflags "$(LDFLAGS) -s -w" -o ../$(DEMO_BIN)-darwin-amd64-dist .
-	cd $(DEMO_DIR) && GOOS=darwin GOARCH=arm64 CGO_ENABLED=1 $(GOBUILD) -ldflags "$(LDFLAGS) -s -w" -o ../$(DEMO_BIN)-darwin-arm64-dist .
+	cd $(SERVER_DIR) && GOOS=linux GOARCH=amd64 CGO_ENABLED=1 $(GOBUILD) -ldflags "$(LDFLAGS) -s -w" -o ../../$(SERVER_BIN)-amd64-dist .
+	cd $(SERVER_DIR) && GOOS=linux GOARCH=arm64 CGO_ENABLED=1 CC=aarch64-linux-gnu-gcc $(GOBUILD) -ldflags "$(LDFLAGS) -s -w" -o ../../$(SERVER_BIN)-arm64-dist .
+	cd $(SERVER_DIR) && GOOS=darwin GOARCH=amd64 CGO_ENABLED=1 $(GOBUILD) -ldflags "$(LDFLAGS) -s -w" -o ../../$(SERVER_BIN)-darwin-amd64-dist .
+	cd $(SERVER_DIR) && GOOS=darwin GOARCH=arm64 CGO_ENABLED=1 $(GOBUILD) -ldflags "$(LDFLAGS) -s -w" -o ../../$(SERVER_BIN)-darwin-arm64-dist .
 
 # Clean build artifacts
 clean:
 	$(GOCLEAN)
-	rm -f $(DEMO_BIN)-*
+	rm -f $(SERVER_BIN)-*
 	rm -f coverage.txt coverage.html
 
 # Run tests
@@ -182,41 +182,42 @@ deps:
 	$(GOGET) -u ./...
 	$(GOMOD) tidy
 
-# Run the demo application
+# Run the server application
 run: host
-	./$(DEMO_BIN)-host
+	./$(SERVER_BIN)-host
 
-# Run demo with custom configuration
-run-demo: host
-	@echo "Starting GoCarPlay WebRTC Demo on http://localhost:8001"
-	./$(DEMO_BIN)-host
+# Run server with custom configuration
+run-server: host
+	@echo "Starting GoCarPlay MJPEG Server on http://localhost:8001"
+	./$(SERVER_BIN)-host
 
-# Run demo with specific configuration
+# Run server with Android Auto mode enabled
 run-android: host
 	@echo "Starting with Android Auto mode enabled"
-	ANDROID_MODE=true ./$(DEMO_BIN)-host
+	ANDROID_MODE=true ./$(SERVER_BIN)-host
 
+# Run server with iOS/CarPlay mode
 run-ios: host
 	@echo "Starting with iOS/CarPlay mode"
-	ANDROID_MODE=false ./$(DEMO_BIN)-host
+	ANDROID_MODE=false ./$(SERVER_BIN)-host
 
 # Development helpers
-dev: fmt vet test run-demo
+dev: fmt vet test run-server
 
 # Watch for changes and rebuild (requires entr)
 watch:
 	@which entr > /dev/null 2>&1 || (echo "Please install entr: brew install entr (macOS) or apt-get install entr (Linux)" && exit 1)
-	find . -name "*.go" | entr -r make run-demo
+	find . -name "*.go" | entr -r make run-server
 
 # Install binary to system (requires sudo)
 install: dist
-	sudo cp $(DEMO_BIN)-arm-dist /usr/local/bin/$(DEMO_BIN)
-	sudo chmod +x /usr/local/bin/$(DEMO_BIN)
+	sudo cp $(SERVER_BIN)-arm-dist /usr/local/bin/$(SERVER_BIN)
+	sudo chmod +x /usr/local/bin/$(SERVER_BIN)
 
 # Install for development (to GOPATH/bin)
 install-dev: host
 	mkdir -p $(GOPATH)/bin
-	cp $(DEMO_BIN)-host $(GOPATH)/bin/$(DEMO_BIN)
+	cp $(SERVER_BIN)-host $(GOPATH)/bin/$(SERVER_BIN)
 
 # Docker targets
 docker-build:
@@ -242,8 +243,8 @@ help:
 	@echo "Building:"
 	@echo "  make build       - Build the library"
 	@echo "  make build-static - Build library with static flags"
-	@echo "  make demo        - Build demo for host platform"
-	@echo "  make host        - Build demo for host platform"
+	@echo "  make server      - Build MJPEG server for host platform"
+	@echo "  make host        - Build server for host platform"
 	@echo "  make amd64       - Build for Linux AMD64"
 	@echo "  make arm         - Build for Linux ARM (cross-compile)"
 	@echo "  make arm-native  - Build for ARM on ARM device"
@@ -275,8 +276,8 @@ help:
 	@echo "  make check       - Run all quality checks"
 	@echo ""
 	@echo "Running:"
-	@echo "  make run         - Run the demo"
-	@echo "  make run-demo    - Run WebRTC demo"
+	@echo "  make run         - Run the MJPEG server"
+	@echo "  make run-server  - Run MJPEG server on http://localhost:8001"
 	@echo "  make run-android - Run with Android mode"
 	@echo "  make run-ios     - Run with iOS mode"
 	@echo "  make watch       - Auto-rebuild on changes"

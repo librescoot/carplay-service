@@ -6,6 +6,8 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"log"
+	"sync"
 	"time"
 
 	"github.com/google/gousb"
@@ -20,6 +22,7 @@ var Done func()
 var heartbeatTicker *time.Ticker
 var heartbeatDone chan bool
 var currentConfig *gocarplay.DongleConfig
+var writeMutex sync.Mutex // Protects USB writes from concurrent access
 
 func Init() error {
 	var err error
@@ -28,6 +31,7 @@ func Init() error {
 		return err
 	}
 	ctx = context.Background()
+	log.Println("[Link] Initialization complete, ready to communicate")
 	return nil
 }
 
@@ -53,6 +57,8 @@ func StartWithConfig(config *gocarplay.DongleConfig) error {
 	// Store config globally for phone detection
 	currentConfig = config
 
+	log.Printf("[Config] Starting with display: %dx%d @ %d fps, DPI: %d", config.Width, config.Height, config.Fps, config.Dpi)
+
 	// Send initial configuration files
 	err := SendData(&protocol.SendFile{
 		FileName: protocol.NullTermString(protocol.FileAddressDPI + "\x00"),
@@ -75,6 +81,7 @@ func StartWithConfig(config *gocarplay.DongleConfig) error {
 	if err != nil {
 		return err
 	}
+	log.Println("[Config] Open message sent to dongle")
 
 	// Send configuration settings
 	SendData(&protocol.SendFile{
@@ -110,7 +117,9 @@ func StartWithConfig(config *gocarplay.DongleConfig) error {
 	SendData(&protocol.CarPlay{Type: config.GetMicCommand()})
 
 	// Configure audio transfer
-	SendData(&protocol.CarPlay{Type: config.GetAudioTransferCommand()})
+	audioCmd := config.GetAudioTransferCommand()
+	log.Printf("[Config] Setting audio transfer: %v", audioCmd)
+	SendData(&protocol.CarPlay{Type: audioCmd})
 
 	// Send Android work mode if configured
 	if config.AndroidWorkMode {
@@ -127,6 +136,7 @@ func StartWithConfig(config *gocarplay.DongleConfig) error {
 	// Start heartbeat
 	startHeartbeat()
 
+	log.Println("[Config] Configuration complete, dongle is ready")
 	return nil
 }
 
