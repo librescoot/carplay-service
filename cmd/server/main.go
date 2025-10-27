@@ -18,6 +18,7 @@ import (
 	"github.com/mzyy94/gocarplay"
 	"github.com/mzyy94/gocarplay/link"
 	"github.com/mzyy94/gocarplay/protocol"
+	redisClient "github.com/mzyy94/gocarplay/redis"
 )
 
 type deviceSize struct {
@@ -56,6 +57,9 @@ var (
 	// Frame size statistics for diagnostic purposes
 	h264TotalSize int64
 	jpegTotalSize int64
+
+	// Redis client for state publishing
+	redis *redisClient.Client
 )
 
 func init() {
@@ -64,6 +68,18 @@ func init() {
 	// Small buffers are critical to avoid lag - we want real-time streaming!
 	jpegFrames = make(chan []byte, 3)
 	h264Frames = make(chan []byte, 3)
+}
+
+// mapDeviceType converts protocol.PhoneType to simple device type string
+func mapDeviceType(phoneType protocol.PhoneType) string {
+	switch phoneType {
+	case protocol.AndroidAuto, protocol.AndroidMirror, protocol.HiCar:
+		return "android"
+	case protocol.PhoneTypeCarPlay, protocol.IPhoneMirror:
+		return "ios"
+	default:
+		return "unknown"
+	}
 }
 
 func initializeDongle() error {
@@ -170,6 +186,20 @@ func initializeDongle() error {
 		case *protocol.Plugged:
 			log.Printf("[Device Plugged] PhoneType: %v, WiFi: %v", data.PhoneType, data.Wifi)
 			link.HandlePhonePlugged(data)
+
+			// Publish device connection to Redis
+			if redis != nil {
+				redis.PublishState("device_connected", "true")
+				redis.PublishState("device_type", mapDeviceType(data.PhoneType))
+			}
+		case *protocol.Unplugged:
+			log.Println("[Device Unplugged]")
+
+			// Publish device disconnection to Redis
+			if redis != nil {
+				redis.PublishState("device_connected", "false")
+				redis.PublishState("device_type", "none")
+			}
 		case *protocol.Phase:
 			log.Printf("[Phase] %v", data.PhaseValue)
 		case *protocol.BoxSettings:
@@ -188,6 +218,11 @@ func initializeDongle() error {
 		}
 	}, func(err error) {
 		log.Printf("[ERROR] %#v", err)
+
+		// Publish error to Redis
+		if redis != nil {
+			redis.PublishState("error", fmt.Sprintf("%v", err))
+		}
 	})
 
 	go link.StartWithConfig(config)
@@ -207,6 +242,13 @@ func initializeDongle() error {
 
 	dongleReady = true
 	log.Println("Dongle initialized successfully and ready for connections")
+
+	// Publish dongle availability to Redis
+	if redis != nil {
+		redis.PublishState("dongle_available", "true")
+		redis.PublishState("error", "")
+	}
+
 	return nil
 }
 
@@ -561,6 +603,14 @@ func statusHandler(w http.ResponseWriter, r *http.Request) {
 func cleanup() {
 	log.Println("Shutting down...")
 
+	// Publish dongle unavailable state before shutdown
+	if redis != nil {
+		redis.PublishState("dongle_available", "false")
+		redis.PublishState("device_connected", "false")
+		redis.PublishState("device_type", "none")
+		redis.Close()
+	}
+
 	ffmpegMutex.Lock()
 	defer ffmpegMutex.Unlock()
 
@@ -586,8 +636,28 @@ func main() {
 		log.Println("Debug mode: DISABLED (set DEBUG=1 to enable)")
 	}
 
+	// Initialize Redis client
+	redisAddr := os.Getenv("REDIS_ADDR")
+	if redisAddr == "" {
+		redisAddr = "localhost:6379"
+	}
+	redis = redisClient.NewClient(redisAddr)
+	log.Printf("Redis client initialized (address: %s)", redisAddr)
+
+	// Test Redis connection (non-fatal if it fails)
+	if err := redis.Ping(); err != nil {
+		log.Printf("Warning: Redis connection failed: %v (continuing without Redis)", err)
+	} else {
+		log.Println("Redis connection successful")
+	}
+
 	// Initialize dongle on startup
 	if err := initializeDongle(); err != nil {
+		// Publish dongle failure to Redis before exiting
+		if redis != nil {
+			redis.PublishState("dongle_available", "false")
+			redis.PublishState("error", fmt.Sprintf("Dongle initialization failed: %v", err))
+		}
 		log.Fatalf("Failed to initialize dongle: %v", err)
 	}
 
