@@ -21,6 +21,12 @@ func Connect() (*gousb.InEndpoint, *gousb.OutEndpoint, func(), error) {
 	return ConnectWithTimeout(5, 3*time.Second)
 }
 
+// ConnectOnce attempts to connect to a CarPlay dongle without retries
+// This is useful for hotplug scenarios where the device presence is already confirmed
+func ConnectOnce() (*gousb.InEndpoint, *gousb.OutEndpoint, func(), error) {
+	return ConnectWithTimeout(0, 0) // No retries, immediate attempt only
+}
+
 // ConnectWithTimeout attempts to connect to a CarPlay dongle with configurable retry settings
 func ConnectWithTimeout(maxRetries int, retryDelay time.Duration) (*gousb.InEndpoint, *gousb.OutEndpoint, func(), error) {
 	cleanTask := make([]func(), 0)

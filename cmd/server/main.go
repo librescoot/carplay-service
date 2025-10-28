@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -37,6 +38,10 @@ var (
 	fps         int32 = 30 // Output fps after ffmpeg conversion
 	dongleReady bool
 	debugMode   bool // Enable verbose debug logging via DEBUG=1 environment variable
+
+	// Connection state management
+	stateManager   *link.StateManager
+	hotplugManager *link.HotplugManager
 
 	// MJPEG streaming
 	streamClients sync.Map // map of client channels
@@ -82,175 +87,6 @@ func mapDeviceType(phoneType protocol.PhoneType) string {
 	}
 }
 
-func initializeDongle() error {
-	size.Width = 800
-	size.Height = 480
-
-	log.Println("Initializing USB connection to dongle...")
-	if err := link.Init(); err != nil {
-		return fmt.Errorf("failed to initialize link: %v", err)
-	}
-
-	config := gocarplay.DefaultConfig()
-	config.Width = 800
-	config.Height = 480
-	config.Fps = 30  // Request 30fps from dongle instead of 60fps
-	config.Dpi = 140
-	config.AudioTransferMode = false // Disable audio transfer - we don't use it
-
-	log.Println("Starting communication with dongle...")
-	go link.Communicate(func(data interface{}) {
-		switch data := data.(type) {
-		case *protocol.VideoData:
-			// Send H.264 frame to converter
-			h264FrameCount++
-
-			// Warn about suspiciously small H.264 frames (likely black/empty content)
-			if len(data.Data) > 0 && len(data.Data) < 100 && h264FrameCount > 10 {
-				if h264FrameCount%100 == 0 {
-					log.Printf("[Video] WARNING: Frame #%d is very small (%d bytes) - may be black/empty content",
-						h264FrameCount, len(data.Data))
-				}
-			}
-
-			// Comprehensive diagnostic for first 10 frames
-			if h264FrameCount <= 10 && len(data.Data) >= 5 {
-				nalType := "unknown"
-				if len(data.Data) >= 5 && data.Data[0] == 0 && data.Data[1] == 0 {
-					nalUnitType := data.Data[4] & 0x1F
-					switch nalUnitType {
-					case 1:
-						nalType = "P-frame (non-IDR)"
-					case 5:
-						nalType = "I-frame (IDR)"
-					case 6:
-						nalType = "SEI"
-					case 7:
-						nalType = "SPS"
-					case 8:
-						nalType = "PPS"
-					case 9:
-						nalType = "Access Unit Delimiter"
-					default:
-						nalType = fmt.Sprintf("type_%d", nalUnitType)
-					}
-				}
-
-				hexDump := ""
-				dumpLen := 32
-				if len(data.Data) < dumpLen {
-					dumpLen = len(data.Data)
-				}
-				for i := 0; i < dumpLen; i++ {
-					hexDump += fmt.Sprintf("%02x ", data.Data[i])
-				}
-
-				log.Printf("[Video] Frame #%d: NAL=%s, Size=%d, Flags=%d, First32bytes: %s",
-					h264FrameCount, nalType, len(data.Data), data.Flags, hexDump)
-			}
-
-			if debugMode && h264FrameCount%500 == 1 {
-				log.Printf("[Video] Frame #%d: Width=%d, Height=%d, Flags=%d, Length=%d, DataSize=%d",
-					h264FrameCount, data.Width, data.Height, data.Flags, data.Length, len(data.Data))
-			}
-
-			// Only send non-empty frames
-			if len(data.Data) > 0 {
-				// CRITICAL: Drain old frames to always prioritize the LATEST frame
-				// This prevents lag buildup - we'd rather drop old frames than queue them
-				drained := 0
-				drainLoop:
-					for {
-						select {
-						case <-h264Frames:
-							drained++
-						default:
-							break drainLoop
-						}
-					}
-
-				if drained > 0 && debugMode {
-					log.Printf("[Video] Drained %d old H.264 frames to prioritize latest", drained)
-				}
-
-				// Now send the latest frame (non-blocking)
-				select {
-				case h264Frames <- data.Data:
-				default:
-					// Still full? Drop this frame too
-					if debugMode {
-						log.Printf("[Video] WARNING: Dropped H.264 frame, channel full after drain")
-					}
-				}
-			}
-		case *protocol.Plugged:
-			log.Printf("[Device Plugged] PhoneType: %v, WiFi: %v", data.PhoneType, data.Wifi)
-			link.HandlePhonePlugged(data)
-
-			// Publish device connection to Redis
-			if redis != nil {
-				redis.PublishState("device_connected", "true")
-				redis.PublishState("device_type", mapDeviceType(data.PhoneType))
-			}
-		case *protocol.Unplugged:
-			log.Println("[Device Unplugged]")
-
-			// Publish device disconnection to Redis
-			if redis != nil {
-				redis.PublishState("device_connected", "false")
-				redis.PublishState("device_type", "none")
-			}
-		case *protocol.Phase:
-			log.Printf("[Phase] %v", data.PhaseValue)
-		case *protocol.BoxSettings:
-			log.Printf("[BoxSettings] %s", string(data.Settings))
-		case *protocol.MediaData:
-			handleMediaData(data)
-		case *protocol.AudioData:
-			// Silently drop audio data - we're not using it
-			// Only log in debug mode
-			if debugMode {
-				log.Printf("[Audio] Received %d bytes (DecodeType: %d, AudioType: %d)",
-					len(data.Data), data.DecodeType, data.AudioType)
-			}
-		default:
-			log.Printf("[onData] %#v", data)
-		}
-	}, func(err error) {
-		log.Printf("[ERROR] %#v", err)
-
-		// Publish error to Redis
-		if redis != nil {
-			redis.PublishState("error", fmt.Sprintf("%v", err))
-		}
-	})
-
-	go link.StartWithConfig(config)
-
-	// Start ffmpeg converter
-	if err := startFFmpegConverter(); err != nil {
-		return fmt.Errorf("failed to start ffmpeg: %v", err)
-	}
-
-	// Give ffmpeg time to initialize its decoder before frames arrive
-	// This prevents "Invalid data" errors when first frames arrive too early
-	time.Sleep(200 * time.Millisecond)
-	log.Println("[FFmpeg] Initialization delay complete, ready to process frames")
-
-	// Start frame broadcaster
-	go broadcastFrames()
-
-	dongleReady = true
-	log.Println("Dongle initialized successfully and ready for connections")
-
-	// Publish dongle availability to Redis
-	if redis != nil {
-		redis.PublishState("dongle_available", "true")
-		redis.PublishState("error", "")
-	}
-
-	return nil
-}
 
 func handleMediaData(data *protocol.MediaData) {
 	if data.Type == protocol.MediaTypeData {
@@ -549,6 +385,11 @@ func touchHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !dongleReady {
+		http.Error(w, "Dongle not connected", http.StatusServiceUnavailable)
+		return
+	}
+
 	var touch deviceTouch
 	if err := json.NewDecoder(r.Body).Decode(&touch); err != nil {
 		http.Error(w, fmt.Sprintf("Invalid JSON: %v", err), http.StatusBadRequest)
@@ -582,44 +423,249 @@ func statusHandler(w http.ResponseWriter, r *http.Request) {
 		return true
 	})
 
+	var connectionState string
+	if stateManager != nil {
+		connectionState = stateManager.GetState().String()
+	} else {
+		connectionState = "unknown"
+	}
+
 	if dongleReady {
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"status":  "ready",
-			"width":   size.Width,
-			"height":  size.Height,
-			"fps":     fps,
-			"clients": clientCount,
-			"format":  "MJPEG",
+			"status":           "ready",
+			"dongle_state":     connectionState,
+			"width":            size.Width,
+			"height":           size.Height,
+			"fps":              fps,
+			"clients":          clientCount,
+			"format":           "MJPEG",
+			"hotplug_enabled":  true,
 		})
 	} else {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"status": "initializing",
+			"status":          "dongle_not_connected",
+			"dongle_state":    connectionState,
+			"hotplug_enabled": true,
+			"message":         "Waiting for USB dongle attachment",
 		})
 	}
 }
 
-func cleanup() {
-	log.Println("Shutting down...")
-
-	// Publish dongle unavailable state before shutdown
-	if redis != nil {
-		redis.PublishState("dongle_available", "false")
-		redis.PublishState("device_connected", "false")
-		redis.PublishState("device_type", "none")
-		redis.Close()
-	}
+func stopVideoPipeline() {
+	log.Println("[Pipeline] Stopping video pipeline...")
 
 	ffmpegMutex.Lock()
 	defer ffmpegMutex.Unlock()
 
 	if ffmpegStdin != nil {
 		ffmpegStdin.Close()
+		ffmpegStdin = nil
 	}
 	if ffmpegCmd != nil && ffmpegCmd.Process != nil {
 		ffmpegCmd.Process.Kill()
 		ffmpegCmd.Wait()
+		ffmpegCmd = nil
+	}
+
+	ffmpegStdout = nil
+	ffmpegStdoutBuffered = nil
+
+	log.Println("[Pipeline] Video pipeline stopped")
+}
+
+func handleConnection() error {
+	log.Println("[Hotplug] Handling dongle connection...")
+
+	size.Width = 800
+	size.Height = 480
+
+	// Connect to dongle
+	epIn, epOut, cleanup, err := link.ConnectOnce()
+	if err != nil {
+		return fmt.Errorf("failed to connect: %v", err)
+	}
+
+	// Initialize link layer with the opened endpoints
+	if err := link.InitWithEndpoints(epIn, epOut, cleanup); err != nil {
+		cleanup()
+		return fmt.Errorf("failed to initialize link: %v", err)
+	}
+
+	config := gocarplay.DefaultConfig()
+	config.Width = 800
+	config.Height = 480
+	config.Fps = 30
+	config.Dpi = 140
+	config.AudioTransferMode = false
+
+	log.Println("[Hotplug] Starting communication with dongle...")
+	go func() {
+		err := link.Communicate(func(data interface{}) {
+			switch data := data.(type) {
+			case *protocol.VideoData:
+				// Send H.264 frame to converter
+				h264FrameCount++
+
+				// Warn about suspiciously small H.264 frames
+				if len(data.Data) > 0 && len(data.Data) < 100 && h264FrameCount > 10 {
+					if h264FrameCount%100 == 0 {
+						log.Printf("[Video] WARNING: Frame #%d is very small (%d bytes)", h264FrameCount, len(data.Data))
+					}
+				}
+
+				// Diagnostic for first 10 frames
+				if h264FrameCount <= 10 && len(data.Data) >= 5 {
+					nalType := "unknown"
+					if len(data.Data) >= 5 && data.Data[0] == 0 && data.Data[1] == 0 {
+						nalUnitType := data.Data[4] & 0x1F
+						switch nalUnitType {
+						case 1:
+							nalType = "P-frame"
+						case 5:
+							nalType = "I-frame"
+						case 7:
+							nalType = "SPS"
+						case 8:
+							nalType = "PPS"
+						}
+					}
+					log.Printf("[Video] Frame #%d: NAL=%s, Size=%d", h264FrameCount, nalType, len(data.Data))
+				}
+
+				// Only send non-empty frames
+				if len(data.Data) > 0 {
+					// Drain old frames
+					drained := 0
+					for {
+						select {
+						case <-h264Frames:
+							drained++
+						default:
+							goto done
+						}
+					}
+				done:
+					// Send latest frame
+					select {
+					case h264Frames <- data.Data:
+					default:
+						if debugMode {
+							log.Printf("[Video] Dropped H.264 frame")
+						}
+					}
+				}
+			case *protocol.Plugged:
+				log.Printf("[Device Plugged] PhoneType: %v, WiFi: %v", data.PhoneType, data.Wifi)
+				link.HandlePhonePlugged(data)
+				if redis != nil {
+					redis.PublishState("device_connected", "true")
+					redis.PublishState("device_type", mapDeviceType(data.PhoneType))
+				}
+			case *protocol.Unplugged:
+				log.Println("[Device Unplugged]")
+				if redis != nil {
+					redis.PublishState("device_connected", "false")
+					redis.PublishState("device_type", "none")
+				}
+			case *protocol.Phase:
+				log.Printf("[Phase] %v", data.PhaseValue)
+			case *protocol.BoxSettings:
+				log.Printf("[BoxSettings] %s", string(data.Settings))
+			case *protocol.MediaData:
+				handleMediaData(data)
+			case *protocol.AudioData:
+				if debugMode {
+					log.Printf("[Audio] Received %d bytes", len(data.Data))
+				}
+			default:
+				log.Printf("[onData] %#v", data)
+			}
+		}, func(err error) {
+			log.Printf("[ERROR] %#v", err)
+			if redis != nil {
+				redis.PublishState("error", fmt.Sprintf("%v", err))
+			}
+		})
+
+		// Communication loop ended
+		if err != nil && err != context.Canceled {
+			log.Printf("[Comm] Communication loop ended with error: %v", err)
+		}
+	}()
+
+	go link.StartWithConfig(config)
+
+	// Start video pipeline
+	if err := startFFmpegConverter(); err != nil {
+		return fmt.Errorf("failed to start ffmpeg: %v", err)
+	}
+
+	// Start frame broadcaster
+	go broadcastFrames()
+
+	time.Sleep(200 * time.Millisecond)
+
+	dongleReady = true
+	log.Println("[Hotplug] Dongle fully initialized and ready")
+
+	// Publish state to Redis
+	if redis != nil {
+		redis.PublishState("dongle_available", "true")
+		redis.PublishState("error", "")
+	}
+
+	return nil
+}
+
+func handleDisconnection() {
+	log.Println("[Hotplug] Handling dongle disconnection...")
+
+	dongleReady = false
+
+	// Close link connection (this cancels the communication loop internally)
+	link.Close()
+
+	// Stop video pipeline
+	stopVideoPipeline()
+
+	// Drain channels
+	for len(h264Frames) > 0 {
+		<-h264Frames
+	}
+	for len(jpegFrames) > 0 {
+		<-jpegFrames
+	}
+
+	// Reset counters
+	h264FrameCount = 0
+	jpegFrameCount = 0
+
+	log.Println("[Hotplug] Disconnection cleanup complete")
+
+	// Publish state to Redis
+	if redis != nil {
+		redis.PublishState("dongle_available", "false")
+		redis.PublishState("device_connected", "false")
+		redis.PublishState("device_type", "none")
+	}
+}
+
+func cleanup() {
+	log.Println("Shutting down...")
+
+	// Stop hotplug monitoring
+	if hotplugManager != nil {
+		hotplugManager.Stop()
+	}
+
+	// Handle disconnection cleanup
+	handleDisconnection()
+
+	// Close Redis
+	if redis != nil {
+		redis.Close()
 	}
 }
 
@@ -627,7 +673,7 @@ func main() {
 	// Check for debug mode
 	debugMode = os.Getenv("DEBUG") == "1"
 
-	log.Println("GoCarPlay Server starting...")
+	log.Println("GoCarPlay Server starting (daemon mode with hotplug support)...")
 	log.Println("Configured resolution: 800x480 @ 30fps")
 	log.Println("Streaming: MJPEG over HTTP (H.264 -> JPEG conversion via ffmpeg)")
 	if debugMode {
@@ -639,7 +685,7 @@ func main() {
 	// Initialize Redis client
 	redisAddr := os.Getenv("REDIS_ADDR")
 	if redisAddr == "" {
-		redisAddr = "localhost:6379"
+		redisAddr = "192.168.7.1:6379"
 	}
 	redis = redisClient.NewClient(redisAddr)
 	log.Printf("Redis client initialized (address: %s)", redisAddr)
@@ -651,18 +697,45 @@ func main() {
 		log.Println("Redis connection successful")
 	}
 
-	// Initialize dongle on startup
-	if err := initializeDongle(); err != nil {
-		// Publish dongle failure to Redis before exiting
+	// Initialize state manager
+	stateManager = link.NewStateManager()
+	log.Println("State manager initialized")
+
+	// Initialize hotplug manager
+	hotplugManager = link.NewHotplugManager(stateManager)
+
+	// Set connection/disconnection callbacks
+	hotplugManager.SetConnectionCallbacks(
+		func() error {
+			return handleConnection()
+		},
+		func() {
+			handleDisconnection()
+		},
+	)
+
+	// Start hotplug monitoring
+	if err := hotplugManager.Start(); err != nil {
+		log.Fatalf("Failed to start hotplug monitoring: %v", err)
+	}
+	log.Println("Hotplug monitoring started")
+
+	// Attempt initial connection
+	log.Println("Attempting initial connection to dongle...")
+	hotplugManager.TriggerConnectionAttempt()
+
+	// Give initial connection a moment to complete
+	time.Sleep(3 * time.Second)
+
+	if dongleReady {
+		log.Println("Initial connection successful!")
+	} else {
+		log.Println("No dongle detected at startup - waiting for hotplug event...")
 		if redis != nil {
 			redis.PublishState("dongle_available", "false")
-			redis.PublishState("error", fmt.Sprintf("Dongle initialization failed: %v", err))
+			redis.PublishState("error", "Waiting for dongle attachment")
 		}
-		log.Fatalf("Failed to initialize dongle: %v", err)
 	}
-
-	// Wait a moment for initialization to complete
-	time.Sleep(2 * time.Second)
 
 	// Setup HTTP endpoints
 	http.HandleFunc("/touch", touchHandler)

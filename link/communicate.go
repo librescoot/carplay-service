@@ -18,20 +18,43 @@ import (
 var epIn *gousb.InEndpoint
 var epOut *gousb.OutEndpoint
 var ctx context.Context
+var cancelCtx context.CancelFunc
 var Done func()
 var heartbeatTicker *time.Ticker
 var heartbeatDone chan bool
 var currentConfig *gocarplay.DongleConfig
-var writeMutex sync.Mutex // Protects USB writes from concurrent access
+var writeMutex sync.Mutex     // Protects USB writes from concurrent access
+var connectionMutex sync.Mutex // Protects connection state changes
 
 func Init() error {
+	connectionMutex.Lock()
+	defer connectionMutex.Unlock()
+
 	var err error
 	epIn, epOut, Done, err = Connect()
 	if err != nil {
 		return err
 	}
-	ctx = context.Background()
+	ctx, cancelCtx = context.WithCancel(context.Background())
 	log.Println("[Link] Initialization complete, ready to communicate")
+	return nil
+}
+
+// InitWithEndpoints initializes the link layer with pre-opened endpoints
+// This is useful for hotplug scenarios where connection is established separately
+func InitWithEndpoints(in *gousb.InEndpoint, out *gousb.OutEndpoint, cleanup func()) error {
+	connectionMutex.Lock()
+	defer connectionMutex.Unlock()
+
+	if in == nil || out == nil {
+		return errors.New("Invalid endpoints provided")
+	}
+
+	epIn = in
+	epOut = out
+	Done = cleanup
+	ctx, cancelCtx = context.WithCancel(context.Background())
+	log.Println("[Link] Initialization complete with provided endpoints")
 	return nil
 }
 
@@ -201,8 +224,22 @@ func Communicate(onData func(interface{}), onError func(error)) error {
 		return errors.New("Not connected")
 	}
 	for {
+		// Check if context is cancelled
+		select {
+		case <-ctx.Done():
+			log.Println("[Link] Communication loop cancelled")
+			return ctx.Err()
+		default:
+			// Continue with normal operation
+		}
+
 		received, err := ReceiveMessage(epIn, ctx)
 		if err != nil {
+			// Check if error is due to context cancellation
+			if ctx.Err() != nil {
+				log.Println("[Link] Communication stopped due to context cancellation")
+				return ctx.Err()
+			}
 			onError(err)
 		} else {
 			onData(received)
@@ -219,13 +256,39 @@ func SendData(data interface{}) error {
 
 // Close properly closes the connection and stops the heartbeat
 func Close() {
+	connectionMutex.Lock()
+	defer connectionMutex.Unlock()
+
+	log.Println("[Link] Closing connection gracefully...")
+
+	// Cancel context to stop communication loop
+	if cancelCtx != nil {
+		cancelCtx()
+		cancelCtx = nil
+	}
+
+	// Stop heartbeat
 	stopHeartbeat()
+
+	// Close USB connection
 	if Done != nil {
 		Done()
 		Done = nil
 	}
+
+	// Clear endpoints
 	epIn = nil
 	epOut = nil
+	currentConfig = nil
+
+	log.Println("[Link] Connection closed")
+}
+
+// IsConnected returns true if the link is currently connected
+func IsConnected() bool {
+	connectionMutex.Lock()
+	defer connectionMutex.Unlock()
+	return epIn != nil && epOut != nil
 }
 
 // SendCommand sends a CarPlay command
