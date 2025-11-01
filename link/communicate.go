@@ -25,6 +25,7 @@ var heartbeatDone chan bool
 var currentConfig *gocarplay.DongleConfig
 var writeMutex sync.Mutex     // Protects USB writes from concurrent access
 var connectionMutex sync.Mutex // Protects connection state changes
+var commDoneChan chan struct{} // Signals when communication loop exits
 
 func Init() error {
 	connectionMutex.Lock()
@@ -54,6 +55,7 @@ func InitWithEndpoints(in *gousb.InEndpoint, out *gousb.OutEndpoint, cleanup fun
 	epOut = out
 	Done = cleanup
 	ctx, cancelCtx = context.WithCancel(context.Background())
+	commDoneChan = make(chan struct{})
 	log.Println("[Link] Initialization complete with provided endpoints")
 	return nil
 }
@@ -223,6 +225,15 @@ func Communicate(onData func(interface{}), onError func(error)) error {
 	if epIn == nil {
 		return errors.New("Not connected")
 	}
+
+	// Signal when communication loop exits
+	defer func() {
+		if commDoneChan != nil {
+			close(commDoneChan)
+			commDoneChan = nil
+		}
+	}()
+
 	for {
 		// Check if context is cancelled
 		select {
@@ -267,11 +278,24 @@ func Close() {
 		cancelCtx = nil
 	}
 
+	// Wait for communication loop to exit with timeout
+	if commDoneChan != nil {
+		log.Println("[Link] Waiting for communication loop to exit...")
+		select {
+		case <-commDoneChan:
+			log.Println("[Link] Communication loop exited cleanly")
+		case <-time.After(500 * time.Millisecond):
+			log.Println("[Link] WARNING: Communication loop exit timeout, proceeding with cleanup")
+		}
+		commDoneChan = nil
+	}
+
 	// Stop heartbeat
 	stopHeartbeat()
 
 	// Close USB connection
 	if Done != nil {
+		log.Println("[Link] Closing USB resources...")
 		Done()
 		Done = nil
 	}

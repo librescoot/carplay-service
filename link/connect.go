@@ -98,8 +98,24 @@ deviceFound:
 	cleanTask = nil
 
 	return epIn, epOut, func() {
-		for _, task := range closeTask {
-			task()
+		// Wrap cleanup in recovery to prevent crashes from libusb errors
+		// This is critical when device is physically disconnected
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[USB] PANIC during cleanup (recovered): %v", r)
+			}
+		}()
+
+		for i, task := range closeTask {
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						log.Printf("[USB] PANIC during cleanup task %d (recovered): %v", i, r)
+					}
+				}()
+				task()
+			}()
 		}
+		log.Println("[USB] Cleanup complete")
 	}, nil
 }
